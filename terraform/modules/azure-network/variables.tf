@@ -1,3 +1,10 @@
+variable "rg" {
+  type = object({
+    name     = string
+    location = string
+  })
+}
+
 variable "mandatory" {
   type        = string
   description = "this field is mandatory"

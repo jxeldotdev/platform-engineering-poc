@@ -1,54 +1,6 @@
 locals {
-  subnet_names = ["${var.base_name}-${var.environment}-mgmt-cluster", "${var.base_name}-${var.environment}-app-cluster", "lb", "${var.base_name}-${var.environment}-ingress"]
+  subnet_names = ["${var.base_name}-${var.environment}-mgmt-cluster", "${var.base_name}-${var.environment}-app-cluster", "${var.base_name}-${var.environment}-ingress", "GatewaySubnet"]
 
-}
-
-variable "rg" {
-  type = object({
-    name     = string
-    location = string
-  })
-}
-
-# Create a virtual network within the resource group
-// only need to allow incomming traffic from NLB
-resource "azurerm_network_security_group" "sgs" {
-  for_each = {
-    mgmt-cluster = ""
-    app-cluster  = ""
-    workers     = ""
-    lb          = ""
-    haproxy     = ""
-    bastion     = ""
-  }
-  name                = each.key
-  location            = var.rg.location
-  resource_group_name = var.rg.name
-}
-
-
-resource "azurerm_application_security_group" "haproxy" {
-  name                = "haproxy"
-  location            = var.rg.location
-  resource_group_name = var.rg.name
-}
-
-resource "azurerm_application_security_group" "mgmt-cluster" {
-  name                = "mgmt-cluster"
-  location            = var.rg.location
-  resource_group_name = var.rg.name
-}
-
-resource "azurerm_application_security_group" "app-cluster" {
-  name                = "app-cluster"
-  location            = var.rg.location
-  resource_group_name = var.rg.name
-}
-
-resource "azurerm_application_security_group" "workers" {
-  name                = "workers"
-  location            = var.rg.location
-  resource_group_name = var.rg.name
 }
 
 resource "azurerm_virtual_network" "main" {
@@ -66,26 +18,52 @@ resource "azurerm_virtual_network" "main" {
   subnet {
     name           = local.subnet_names[1]
     address_prefix = "10.0.101.0/24"
-    security_group = azurerm_network_security_group.sgs["workers"].id
+    security_group = azurerm_network_security_group.sgs["app-cluster"].id
   }
 
   subnet {
     name           = local.subnet_names[2]
     address_prefix = "10.0.201.0/24"
-    security_group = azurerm_network_security_group.sgs["lb"].id
+    security_group = azurerm_network_security_group.sgs["ingress"].id
   }
 
+  // gateway subnet
   subnet {
     name           = local.subnet_names[3]
-    address_prefix = "10.0.220.0/24"
-    security_group = azurerm_network_security_group.sgs["haproxy"].id
+    address_prefix = "10.0.202.0/27"
   }
+}
 
-  subnet {
-    name           = "AzureBastionSubnet"
-    address_prefix = "10.0.202.0/24"
-    security_group = azurerm_network_security_group.bastion.id
+# Create a virtual network within the resource group
+// only need to allow incomming traffic from NLB
+resource "azurerm_network_security_group" "sgs" {
+  for_each = {
+    mgmt-cluster = ""
+    app-cluster  = ""
+    ingress      = ""
+    vpn          = ""
   }
+  name                = each.key
+  location            = var.rg.location
+  resource_group_name = var.rg.name
+}
+
+resource "azurerm_application_security_group" "mgmt-cluster" {
+  name                = "mgmt-cluster"
+  location            = var.rg.location
+  resource_group_name = var.rg.name
+}
+
+resource "azurerm_application_security_group" "app-cluster" {
+  name                = "app-cluster"
+  location            = var.rg.location
+  resource_group_name = var.rg.name
+}
+
+resource "azurerm_application_security_group" "ingress" {
+  name                = "workers"
+  location            = var.rg.location
+  resource_group_name = var.rg.name
 }
 
 resource "azurerm_subnet_nat_gateway_association" "subnets" {
@@ -93,10 +71,10 @@ resource "azurerm_subnet_nat_gateway_association" "subnets" {
     azurerm_virtual_network.main
   ]
   for_each = toset(
-    [data.azurerm_subnet.workers.id,
+    [data.azurerm_subnet.app-cluster.id,
       data.azurerm_subnet.mgmt-cluster.id,
-      data.azurerm_subnet.lb.id,
-    data.azurerm_subnet.haproxy.id]
+      data.azurerm_subnet.vpn.id,
+    data.azurerm_subnet.ingress.id]
   )
 
   subnet_id      = each.key
@@ -126,7 +104,7 @@ resource "azurerm_nat_gateway_public_ip_association" "example" {
   public_ip_address_id = azurerm_public_ip.natgw.id
 }
 
-data "azurerm_subnet" "workers" {
+data "azurerm_subnet" "app-cluster" {
   name                 = local.subnet_names[1]
   resource_group_name  = var.rg.name
   virtual_network_name = azurerm_virtual_network.main.name
@@ -138,25 +116,19 @@ data "azurerm_subnet" "mgmt-cluster" {
   virtual_network_name = azurerm_virtual_network.main.name
 }
 
-data "azurerm_subnet" "lb" {
+data "azurerm_subnet" "ingress" {
   name                 = local.subnet_names[2]
   resource_group_name  = var.rg.name
   virtual_network_name = azurerm_virtual_network.main.name
 }
 
-data "azurerm_subnet" "haproxy" {
-  name                 = local.subnet_names[3]
+data "azurerm_subnet" "vpn" {
+  name                 = "GatewaySubnet"
   resource_group_name  = var.rg.name
   virtual_network_name = azurerm_virtual_network.main.name
 }
 
-data "azurerm_subnet" "bastion" {
-  name                 = "AzureBastionSubnet"
-  resource_group_name  = var.rg.name
-  virtual_network_name = azurerm_virtual_network.main.name
-}
-
-
+/*
 // LB -> HAProxy
 resource "azurerm_network_security_rule" "mgmt-cluster-nlb-to-lb" {
   depends_on = [
@@ -319,3 +291,5 @@ resource "azurerm_network_security_rule" "workers-nodeport-ing" {
   resource_group_name                        = var.rg.name
   network_security_group_name                = azurerm_network_security_group.sgs["workers"].name
 }
+
+*/
